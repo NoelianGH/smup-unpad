@@ -116,7 +116,7 @@ const postMsg = async (req, res) => {
       await newMessage.save();
     }
 
-    const response = await axios.post('http://127.0.0.1:8080/reply', {
+    const response = await axios.post('http://127.0.0.1:8085/reply', {
       message: msg,
     });
     const replyText = response.data.Reply;

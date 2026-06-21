@@ -32,7 +32,7 @@ if not api_key:
 client = Groq(api_key=api_key)
 
 print("Loading embedding model...")
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 EMBEDDING_DIM = 384
 print("Embedding model loaded.")
 
@@ -55,7 +55,7 @@ def cosine_similarity(a, b):
         return 0.0
     return np.dot(a, b) / (norm_a * norm_b)
 
-def load_url_history(path="./scrapping/doc/urlHistory.txt"):
+def load_url_history(path="../chatbot/doc/urlHistory.txt"):
     url_map = {}
     if not os.path.exists(path):
         print(f"WARNING: File {path} tidak ditemukan.")
@@ -72,7 +72,7 @@ def load_url_history(path="./scrapping/doc/urlHistory.txt"):
         print(f"Error loading URL history: {e}")
     return url_map
 
-def load_and_index_documents(folder_path="./scrapping/doc/pages", cache_path="./scrapping/doc/embeddings_cache.json"):
+def load_and_index_documents(folder_path="../chatbot/doc/pages", cache_path="../chatbot/doc/embeddings_cache.json"):
     global INDEXED_DOCS, URL_HISTORY
     URL_HISTORY = load_url_history()
     print(f"\n--- Memulai Indexing dari: {folder_path} ---")
@@ -162,7 +162,7 @@ def retrieve_by_wordnet(question, k=5):
 
 def call_groq(messages, temperature=0.3, max_tokens=1024):
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-8b-instant",
         messages=messages,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -190,8 +190,22 @@ FORMAT: HTML valid tanpa ```html. Gunakan <p>, <ul>/<li>, <ol>/<li>, <table>. Ja
 Jika tidak ada info: <p>Maaf, informasi tidak ditemukan dalam dokumen.</p>"""
     messages = [{"role": "system", "content": system_prompt}]
     for turn in history:
-        messages.append({"role": "user", "content": turn["q"]})
-        messages.append({"role": "assistant", "content": turn["a"]})
+        # turn bisa berupa dict dari database MongoDB (sender, text) atau history internal (q, a)
+        if isinstance(turn, dict):
+            sender = turn.get("sender")
+            text = turn.get("text", "")
+            if sender == "USER":
+                messages.append({"role": "user", "content": text})
+            elif sender == "SELF":
+                messages.append({"role": "assistant", "content": text})
+            else:
+                # Fallback jika format turn berupa {"q": ..., "a": ...}
+                q_val = turn.get("q")
+                a_val = turn.get("a")
+                if q_val:
+                    messages.append({"role": "user", "content": q_val})
+                if a_val:
+                    messages.append({"role": "assistant", "content": a_val})
     messages.append({"role": "user", "content": f"KONTEKS:\n{context}\n\nPERTANYAAN: {question}"})
     return messages
 
@@ -200,8 +214,8 @@ def mainrag(history, question):
     if not INDEXED_DOCS:
         load_and_index_documents()
     print(f"\nProcessing: {question}")
-    docs_emb = retrieve_by_embedding(question, k=5)
-    docs_wn = retrieve_by_wordnet(question, k=5)
+    docs_emb = retrieve_by_embedding(question, k=2)
+    docs_wn = retrieve_by_wordnet(question, k=2)
     combined_docs = list({d['id']: d for d in (docs_emb + docs_wn)}.values())
     if not combined_docs:
         return "<p>Maaf, tidak ditemukan informasi yang relevan.</p>"
@@ -223,8 +237,8 @@ def mainragocr(history, question, ocr_text=None):
         load_and_index_documents()
     print(f"\nProcessing OCR RAG: {question}")
     q = question + (f"\n[OCR]:\n{ocr_text}" if ocr_text else "")
-    docs_emb = retrieve_by_embedding(q, k=5)
-    docs_wn = retrieve_by_wordnet(q, k=5)
+    docs_emb = retrieve_by_embedding(q, k=2)
+    docs_wn = retrieve_by_wordnet(q, k=2)
     combined_docs = list({d['id']: d for d in (docs_emb + docs_wn)}.values())
     if not combined_docs:
         return "<p>Maaf, tidak ditemukan informasi yang relevan.</p>"

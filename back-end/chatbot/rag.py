@@ -3,15 +3,12 @@ import numpy as np
 from dotenv import load_dotenv
 from pathlib import Path
 import json
-import re
-from collections import Counter
-from groq import Groq
+from collections import deque
 
-# --- IMPORT LANGCHAIN ---
+# --- IMPORT LANGCHAIN (modern LCEL, no deprecated classes) ---
 from langchain_groq import ChatGroq
-from langchain.prompts import PromptTemplate
-from langchain.memory import ConversationBufferWindowMemory
-from langchain.chains import LLMChain
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 
 # --- IMPORT SENTENCE TRANSFORMERS (untuk Embedding lokal) ---
 from sentence_transformers import SentenceTransformer
@@ -43,31 +40,39 @@ if not api_key:
 
 # --- EMBEDDING MODEL (lokal, tidak butuh API key) ---
 print("Loading embedding model...")
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 EMBEDDING_DIM = 384
 print("Embedding model loaded.")
 
 # --- GLOBAL VARIABLES ---
 INDEXED_DOCS = []
 
+# Manual sliding-window memory (replaces ConversationBufferWindowMemory)
+CHAT_HISTORY: deque = deque(maxlen=5)  # keep last 5 exchanges
+
+def _get_chat_history_str() -> str:
+    """Format chat history as a plain string for the prompt."""
+    if not CHAT_HISTORY:
+        return "(belum ada riwayat)"
+    lines = []
+    for human, ai in CHAT_HISTORY:
+        lines.append(f"Manusia: {human}")
+        lines.append(f"AI: {ai}")
+    return "\n".join(lines)
+
 # --- LANGCHAIN SETUP ---
 
 # Model Utama (Groq)
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",  # Bisa diganti: mixtral-8x7b-32768, gemma2-9b-it, dll
+    model="llama-3.1-8b-instant",  # Model 8B memiliki limit TPM yang jauh lebih besar untuk tier gratis
     groq_api_key=api_key,
     temperature=0.3,
     timeout=60,
 )
 
-# A. Setup Memory
-memory = ConversationBufferWindowMemory(
-    k=5,
-    memory_key="chat_history",
-    input_key="question"
-)
+parser = StrOutputParser()
 
-# B. Setup Prompt Reranking
+# B. Setup Prompt Reranking (LCEL)
 rerank_template = """
 Anda adalah sistem penilai relevansi dokumen.
 Diberikan pertanyaan pengguna dan daftar kutipan dokumen, tugas Anda adalah memilih dokumen mana yang paling relevan untuk menjawab pertanyaan tersebut.
@@ -90,9 +95,9 @@ rerank_prompt = PromptTemplate(
     input_variables=["question", "docs_list"],
     template=rerank_template
 )
-rerank_chain = LLMChain(llm=llm, prompt=rerank_prompt)
+rerank_chain = rerank_prompt | llm | parser
 
-# C. Setup Prompt Jawaban Akhir (Format HTML)
+# C. Setup Prompt Jawaban Akhir (Format HTML) — LCEL
 qa_template = """
 Anda adalah asisten AI untuk Universitas Padjadjaran (Unpad).
 Jawablah pertanyaan berdasarkan dokumen terpilih di bawah ini.
@@ -120,7 +125,7 @@ qa_prompt = PromptTemplate(
     input_variables=["chat_history", "context", "question"],
     template=qa_template
 )
-qa_chain = LLMChain(llm=llm, prompt=qa_prompt, memory=memory)
+qa_chain = qa_prompt | llm | parser
 
 
 # --- FUNGSI UTILITY ---
@@ -275,7 +280,7 @@ def mainrag(question):
             "docs_list": docs_str
         })
 
-        relevant_ids = [x.strip() for x in rerank_res['text'].split(',')]
+        relevant_ids = [x.strip() for x in rerank_res.split(',')]
 
         final_docs = [d for d in combined_docs if d['id'] in relevant_ids]
 
@@ -293,11 +298,16 @@ def mainrag(question):
     context_text = "\n\n".join([f"Sumber: {d['filename']}\nIsi: {d['text']}" for d in final_docs])
 
     try:
-        response = qa_chain.invoke({
+        answer = qa_chain.invoke({
             "question": question,
-            "context": context_text
+            "context": context_text,
+            "chat_history": _get_chat_history_str()
         })
-        return response['text']
+
+        # Save to manual memory
+        CHAT_HISTORY.append((question, answer))
+
+        return answer
 
     except Exception as e:
         return f"<p>Error generation: {str(e)}</p>"
@@ -305,4 +315,4 @@ def mainrag(question):
 
 def reload_rag():
     load_and_index_documents()
-    memory.clear()
+    CHAT_HISTORY.clear()

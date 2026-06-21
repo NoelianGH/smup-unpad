@@ -10,7 +10,7 @@ load_dotenv()
 
 import websockets
 from websockets.server import WebSocketServerProtocol
-from bson import ObjectId
+from bson.objectid import ObjectId
 
 from db import chats_col, messages_col, device_tokens_col
 from model import make_chat_doc, make_message_doc, str_to_oid
@@ -57,7 +57,7 @@ async def monitor_inactive_chats():
                     active_websockets.pop(cid_str, None)
                     continue
                 ws = active_websockets.get(cid_str)
-                if ws is None or ws.closed:
+                if ws is None or ws.close_code is not None:
                     await mark_chat_nonactive(oid)
                     last_connected.pop(cid_str, None)
                     active_websockets.pop(cid_str, None)
@@ -93,7 +93,7 @@ async def validate_device_token(chat_oid, device_token: str) -> bool:
     return stored == device_token
 
 
-async def handler(ws: WebSocketServerProtocol, path):
+async def handler(ws: WebSocketServerProtocol):
     client = ws.remote_address
     print(f"[connect] from {client}")
     try:
@@ -224,7 +224,6 @@ async def handler(ws: WebSocketServerProtocol, path):
                 message_oid = r.inserted_id
 
                 # RAG REPLY
-                
                 msg_history = await messages_col.find({"chatId": chat_oid}).sort("createdAt", 1).to_list(None)
                 reply_text = rag.mainrag(msg_history,msg_text)
                 reply = make_message_doc(chat_oid, reply_text, None, sender="SELF")
@@ -239,18 +238,44 @@ async def handler(ws: WebSocketServerProtocol, path):
 
                 print(f"[message] saved {message_oid} for chat {chat_id}")
 
-            # SEND MESSAGE WITH ATTACHMENT (single binary expected after header)
+            # === LOAD HISTORY ===
+            elif action == "get_history":
+                device_token = data.get("deviceToken")
+                device_doc = await device_tokens_col.find_one({"deviceToken": device_token})
+                if not device_doc or device_doc.get("lastChatId") != chat_id:
+                     await ws.send(json.dumps({"status":"error", "message":"unauthorized"}))
+                     continue
+                
+                chat_oid = str_to_oid(chat_id)
+                if not chat_oid:
+                    continue
+
+                cursor = messages_col.find({"chatId": chat_oid}).sort("createdAt", 1)
+                stored_messages = await cursor.to_list(None)
+
+                history_payload = []
+                for m in stored_messages:
+                    sender_fe = "bot" if m.get("sender") == "SELF" else "user"
+                    history_payload.append({
+                        "sender": sender_fe,
+                        "text": m.get("text", ""),
+                        "attachmentUrl": m.get("attachment")
+                    })
+
+                await ws.send(json.dumps({
+                    "status": "ok",
+                    "action": "get_history",
+                    "messages": history_payload
+                }))
+
+            # SEND MESSAGE WITH ATTACHMENT
             elif action == "send_message_with_attachment":
-
-
-                # DEVICE TOKEN VALIDATION
                 device_token = data.get("deviceToken")
                 device_doc = await device_tokens_col.find_one({"deviceToken": device_token})
                 if not device_doc:
                     await ws.send(json.dumps({"status":"error","message":"invalid deviceToken"}))
                     continue
 
-                # DEVICE MUST BE BOUND TO THIS CHAT
                 if device_doc.get("lastChatId") != chat_id:
                     await ws.send(json.dumps({
                         "status": "error",
@@ -269,7 +294,6 @@ async def handler(ws: WebSocketServerProtocol, path):
                     await ws.send(json.dumps({"status":"error","message":"invalid chatId"}))
                     continue
 
-                # NONACTIVE CHECK
                 if chat_doc.get("status") == "NONACTIVE":
                     await ws.send(json.dumps({
                         "status": "error",
@@ -278,7 +302,6 @@ async def handler(ws: WebSocketServerProtocol, path):
                     }))
                     continue
 
-                # RATE LIMIT
                 if not allow_send(device_token):
                     remaining = get_remaining(device_token)
                     await ws.send(json.dumps({"status":"error","message":"rate_limit_exceeded","remaining":remaining, "time_retry":get_retry_after(device_token)}))
@@ -289,20 +312,17 @@ async def handler(ws: WebSocketServerProtocol, path):
                 mimetype = data.get("mimetype")
                 msg_text = data.get("msg", "")
 
-                # placeholder message
                 placeholder = make_message_doc(chat_oid, msg_text, None, sender="USER")
                 r = await messages_col.insert_one(placeholder)
                 message_oid = r.inserted_id
                 message_id_str = str(message_oid)
 
-                # request binary
                 await ws.send(json.dumps({
                     "status": "ok",
                     "action": "ready_for_binary",
                     "messageId": message_id_str
                 }))
 
-                # receive binary
                 try:
                     binary_frame = await asyncio.wait_for(ws.recv(), timeout=30)
                 except asyncio.TimeoutError:
@@ -323,9 +343,7 @@ async def handler(ws: WebSocketServerProtocol, path):
                     await ws.send(json.dumps({"status":"error","message":"file_rejected","reason":reason}))
                     continue
 
-                # save file
                 saved_name = save_binary_file(message_id_str, filename, binary_frame)
-
                 file_url = f"{BASE_FILE_URL}/public/upload/{saved_name}" if BASE_FILE_URL else f"/public/upload/{saved_name}"
 
                 await messages_col.update_one(
@@ -333,7 +351,6 @@ async def handler(ws: WebSocketServerProtocol, path):
                     {"$set": {"attachment": file_url, "updatedAt": datetime.utcnow()}}
                 )
 
-                # RAG reply
                 ocr_msg_text = ocr.ocr_file(os.path.join(os.getenv("STORAGE_PATH", "public/upload"), saved_name))
                 msg_history = await messages_col.find({"chatId": chat_oid}).sort("createdAt", 1).to_list(None)
                 reply_text = rag.mainragocr(msg_history, msg_text, ocr_msg_text)
@@ -350,8 +367,19 @@ async def handler(ws: WebSocketServerProtocol, path):
 
                 print(f"[message+file] saved {message_id_str} file {saved_name} for chat {chat_id}")
 
+            elif action == "admin_reload_rag":
+                try:
+                    rag.reload_rag()
+                    await ws.send(json.dumps({
+                        "status": "ok", 
+                        "action": "admin_reload_rag", 
+                        "message": "Index RAG pada WebSocket berhasil diperbarui"
+                    }))
+                    print("[admin] RAG Reloaded via WebSocket command")
+                except Exception as e:
+                    await ws.send(json.dumps({"status": "error", "message": str(e)}))
+
             elif action == "ping":
-                # simple keepalive
                 await ws.send(json.dumps({"status":"ok","action":"pong"}))
                 if chat_id:
                     last_connected[chat_id] = now_ms()
@@ -367,12 +395,12 @@ async def handler(ws: WebSocketServerProtocol, path):
     except Exception as e:
         print("handler exception:", e)
     finally:
-        # cleanup references to this ws
         to_drop = [cid for cid, w in active_websockets.items() if w is ws]
         for cid in to_drop:
             active_websockets.pop(cid, None)
             last_connected[cid] = now_ms()
         print(f"[cleanup] connection {client} cleaned - removed {to_drop}")
+
 
 async def main():
     ensure_storage()

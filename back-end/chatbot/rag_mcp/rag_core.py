@@ -15,7 +15,7 @@ if not api_key:
 client = Groq(api_key=api_key)
 
 print("Loading embedding model...")
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 EMBEDDING_DIM = 384
 print("Embedding model loaded.")
 

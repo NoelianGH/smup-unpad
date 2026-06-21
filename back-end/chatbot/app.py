@@ -185,5 +185,5 @@ async def upload_document(file: UploadFile = File(...)):
         return {"Status": "Error", "Message": f"Gagal memproses file: {str(e)}"}
     
 if __name__ == "__main__":
-    # Pastikan port sama dengan yang dipanggil di frontend (8080)
-    uvicorn.run(app, host="127.0.0.1", port=8080)
+    # Pastikan port sama dengan yang dipanggil di backend (8085)
+    uvicorn.run(app, host="127.0.0.1", port=8085)
