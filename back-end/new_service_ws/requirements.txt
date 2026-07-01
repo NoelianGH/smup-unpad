@@ -21,3 +21,4 @@ beautifulsoup4==4.14.2
 natsort==8.4.0
 groq==0.28.0
 sentence-transformers==3.4.1
+python-multipart==0.0.32

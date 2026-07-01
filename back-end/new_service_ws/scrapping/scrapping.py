@@ -7,7 +7,7 @@ import os
 import time
 
 visited = set()
-domain = "unpad.ac.id"
+domain = "smup.unpad.ac.id"
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sc_dir = "doc"
 history_file = "doc_new/urlHistory.txt"
