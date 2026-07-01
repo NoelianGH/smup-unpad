@@ -210,21 +210,6 @@ Halaman utama admin di **http://localhost:3000/Admin** setelah berhasil login. A
 
 ---
 
-### 4. 👤 Halaman Kelola / Buat Admin
-
-Tersedia di dalam Dashboard Admin untuk **Super Admin**. Digunakan untuk menambahkan atau mengelola akun administrator lain.
-
-![Buat Admin](docs/images/ui_create_admin.png)
-
-**Cara Penggunaan:**
-- Dari Dashboard, klik menu **Kelola Admin** atau **Buat Admin Baru**
-- Isi **Username Baru** dan **Password Baru** (minimal 6 karakter)
-- Klik **Buat Akun** untuk menyimpan akun admin baru
-- Akun baru akan memiliki role `ADMIN` (bukan `SUPER_ADMIN`)
-- Hanya `SUPER_ADMIN` yang dapat membuat, mengubah password, atau menghapus admin lain
-
----
-
 ## 📁 Struktur Folder
 
 ```
